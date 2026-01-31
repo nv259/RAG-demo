@@ -18,6 +18,7 @@ cssclasses:
 	- Fix context window
 
 ## Retrieval-Augmented Generation
+
 > [!ccue] RAG
 - **Search first, then write**, using the retrieved documents as evidence.
 - ~={green}Advantages=~:
@@ -127,7 +128,7 @@ generate_queries = (
 
 > [!ccue] RAG-Fusion
 
-With the retrieved relevant documents (splits), taking the union of the list might not go well as we thought. The generated *different-perspective* queries might retrieve *weakly* relevant documents. By flushing all documents into the prompt for the LLM to generate the final answer is, sometimes, too wasteful and risky. Noticeably, all retrieved documents must be re-ranked :LiSortDesc: in order to utilize the most relevant documents only. Such approach is called **~={yellow}RAG-Fusion=~**. Example:
+With the retrieved relevant documents (splits), taking the union of the list might not go well as we thought. The generated *different-perspective* queries might retrieve *weakly* relevant documents. By flushing all documents into the prompt for the LLM to generate the final answer is, sometimes, too wasteful and risky. Noticeably, all retrieved documents must be ~={red}re-ranked :LiSortDesc: =~in order to utilize the most relevant documents only. Such approach is called **~={yellow}RAG-Fusion=~**. Example:
 ```python
 from langchain.load import dumps, loads
 
@@ -220,3 +221,133 @@ Passage:"""
 
 prompt_hyde = ChatPromptTemplate.from_template(template)
 ```
+
+## Routing
+### Logical Routing
+Let's the LLMs choose the correct ~={yellow}database=~ for retrieval
+![[Pasted image 20260131142224.png]]
+
+Code diagram:
+![[Pasted image 20260131142325.png]]
+### Semantic Routing
+Let's the LLMs choose the appropriate ~={yellow}**prompt**=~ template to act:
+![[Pasted image 20260131142244.png]]
+
+## Query Construction
+
+> [!ccue] Type of data
+
+Our datastore appears in various types of data (*structured*, *unstructured*, and *semi-structured*). Although normal retrieval on processed query can perform adequately fine on average between natural language (*unstructured*) and other data types, each type of data has specific challenges and considerations:
+
+| Structured                                                                                                                                                                                       | Unstructured                                                                                                                                                                      | Semi-Structured                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Predominantly housed within SQL or Graph databases, structured data is characterized by predefined schemas and organized in tables or relations, making it amenable to precise query operations. | Typically stored in vector databases, unstructured data consists of information without a predefined model, frequently accompanied by structured metadata that enables filtering. | Semi-structured data blends structured elements (e.g., tables in a document or relational database) with unstructured elements (e.g., text or an embedding column in a relational database). |
+
+> [!ccue] Query Construction
+
+To address these challenges, LLMs have great capacity for **query construction**, converting natural language into a specific formal syntax for each type of data. 
+
+> Many user queries are best answered not just by finding documents or data similar in the embedding space, but by ~={yellow}taking advantage of the structure inherent=~ in the data and expressed in the user query.
+
+For example, a query `what are the documents about Matrix Multiplication for fresher training, written by AI department`. We want to look up for Matmul-related documents semantically, but also a component about the category `training` and the author `AI department` that we might want to utilize to filter out unnecessary documents. Such kind of properties (category, author) live commonly in a structured DB, e.g. a SQL or a Graph database, as meta-data.
+
+> [!ccue] Text-to-Metadata filters
+
+![[Pasted image 20260131145546.png]]
+
+Metadata Object:
+```python
+import datetime
+from typing import Literal, Optional, Tuple
+from langchain_core.pydantic_v1 import BaseModel, Field
+
+class TutorialSearch(BaseModel):
+    """Search over a database of tutorial videos about a software library."""
+
+    content_search: str = Field(
+        ...,
+        description="Similarity search query applied to video transcripts.",
+    )
+    title_search: str = Field(
+        ...,
+        description=(
+            "Alternate version of the content search query to apply to video titles. "
+            "Should be succinct and only include key words that could be in a video "
+            "title."
+        ),
+    )
+    min_view_count: Optional[int] = Field(
+        None,
+        description="Minimum view count filter, inclusive. Only use if explicitly specified.",
+    )
+    max_view_count: Optional[int] = Field(
+        None,
+        description="Maximum view count filter, exclusive. Only use if explicitly specified.",
+    )
+    earliest_publish_date: Optional[datetime.date] = Field(
+        None,
+        description="Earliest publish date filter, inclusive. Only use if explicitly specified.",
+    )
+    latest_publish_date: Optional[datetime.date] = Field(
+        None,
+        description="Latest publish date filter, exclusive. Only use if explicitly specified.",
+    )
+    min_length_sec: Optional[int] = Field(
+        None,
+        description="Minimum video length in seconds, inclusive. Only use if explicitly specified.",
+    )
+    max_length_sec: Optional[int] = Field(
+        None,
+        description="Maximum video length in seconds, exclusive. Only use if explicitly specified.",
+    )
+```
+
+Database query converter:
+```python
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+
+system = """You are an expert at converting user questions into database queries. \
+You have access to a database of tutorial videos about a software library for building LLM-powered applications. \
+Given a question, return a database query optimized to retrieve the most relevant results.
+
+If there are acronyms or words you are not familiar with, do not try to rephrase them."""
+prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", system),
+        ("human", "{question}"),
+    ]
+)
+llm = ChatOpenAI(model="gpt-3.5-turbo-0125", temperature=0)
+structured_llm = llm.with_structured_output(TutorialSearch)
+query_analyzer = prompt | structured_llm
+```
+
+> [!ccue] Text-to-SQL
+
+![[Pasted image 20260131150140.png]]
+> [!ccue] Text-to-SQL + semantic
+
+#TODO
+
+> [!ccue] Text-to-Cypher
+
+While vector stores readily handle the similarity search between queries and documents (or splits of docs), it doesn't understand the relationship between vectors, or, in other words, the relationship between documents. While the SQL database can expose these relationships to some extent with keys or table linkages, it becomes unnecessarily costly when there's a change in schema. On the other hand, graph databases don't suffer from those challenges when expressing documents' relationships.
+
+Graph databases often use a specific query language called Cypher, focusing on providing a visual way of matching patterns and relationships. For example: `(:Person {name:"Tomaz"})-[:LIVES_IN]->(:Country {name:"Slovenia"})`. We can translate natural language to Cypher query to benefit from such inherent structure (name, LIVES_IN, etc.).
+```Python
+from langchain.chains import GraphCypherQAChain
+
+graph.refresh_schema()
+
+cypher_chain = GraphCypherQAChain.from_llm(
+    cypher_llm = ChatOpenAI(temperature=0, model_name='gpt-4'),
+    qa_llm = ChatOpenAI(temperature=0), graph=graph, verbose=True,
+)
+
+cypher_chain.run( "How many open tickets there are?" )
+```
+
+> [!ccue] Self-query retriever
+
+#TODO
